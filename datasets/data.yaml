@@ -1,0 +1,12 @@
+names:
+- Nail
+nc: 1
+roboflow:
+  license: CC BY 4.0
+  project: nails_segmentation
+  url: https://universe.roboflow.com/personal-projects-jfbag/nails_segmentation/dataset/44
+  version: 44
+  workspace: personal-projects-jfbag
+test: ../test/images
+train: datasets/train/images
+val: datasets/valid/images

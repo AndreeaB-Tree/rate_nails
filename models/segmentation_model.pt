@@ -1,0 +1,6 @@
+from roboflow import Roboflow
+
+rf = Roboflow(api_key="wtTW8cLT8GIOUZ2VUSSh")
+project = rf.workspace("personal-projects-jfbag").project("nails_segmentation")
+version = project.version(44)
+dataset = version.download("yolov8")
