@@ -13,6 +13,7 @@ CLIENT = InferenceHTTPClient(
 # Output paths
 output_image_path = "output_image.jpg"
 predictions_file = "predictions.json"
+painted_nails_image_path = "src\\bratzslay.jpg"
 
 def scale_image(image, max_width = 800, max_height = 800):
     """Scale image to fit within the specified dimensions while maintaining aspect ratio."""
@@ -31,6 +32,66 @@ def scale_image(image, max_width = 800, max_height = 800):
     scaled_image = cv2.resize(image, (new_width, new_height), interpolation=cv2.INTER_AREA)
     return scaled_image
 
+
+def detect_painted_nails(image, predictions):
+    """
+    Detect painted nails, including white-painted nails, while ignoring natural-colored nails.
+    """
+    painted_nail_count = 0
+
+    for pred in predictions:
+        x1 = int(round(pred['x'] - pred['width'] / 2))
+        y1 = int(round(pred['y'] - pred['height'] / 2))
+        x2 = int(round(pred['x'] + pred['width'] / 2))
+        y2 = int(round(pred['y'] + pred['height'] / 2))
+
+        # Ensure indices are within bounds
+        x1 = max(0, x1)
+        y1 = max(0, y1)
+        x2 = min(image.shape[1], x2)
+        y2 = min(image.shape[0], y2)
+
+        cropped = image[y1:y2, x1:x2]
+        if cropped.size == 0:
+            continue
+
+        # Calculate RGB channel means and brightness
+        b_mean, g_mean, r_mean = cv2.mean(cropped)[:3]
+        gray_cropped = cv2.cvtColor(cropped, cv2.COLOR_BGR2GRAY)
+        mean_brightness = cv2.mean(gray_cropped)[0]
+
+        # Detect painted nails
+        is_painted = False
+
+        # Check for white or near-white color (r \u2248 g \u2248 b) with high brightness
+        if abs(r_mean - g_mean) < 15 and abs(g_mean - b_mean) < 15 and r_mean >= 170:
+            is_painted = True  # White or near-white nails
+
+        # Additional check for high brightness to confirm white-painted nails
+        if mean_brightness >= 170:
+            is_painted = True
+
+        # Define RGB ranges for natural nails (skin tones)
+        natural_min = (180, 150, 120)  # Lower bounds for natural colors (R, G, B)
+        natural_max = (255, 210, 180)  # Upper bounds for natural colors (R, G, B)
+
+        # Check if nail color is not within the natural nail color range
+        if not (natural_min[0] <= r_mean <= natural_max[0] and
+                natural_min[1] <= g_mean <= natural_max[1] and
+                natural_min[2] <= b_mean <= natural_max[2]):
+            # Detect painted nails in bright or pastel colors if not already classified as white
+            if not is_painted:  # Check for bright/pastel colors if not already classified as white
+                if r_mean > 150 or g_mean > 150 or b_mean > 150:  # Bright colors
+                    is_painted = True
+                elif (r_mean > 100 and g_mean > 100 and b_mean > 100) and \
+                     (max(r_mean, g_mean, b_mean) - min(r_mean, g_mean, b_mean) < 50):  # Pastels
+                    is_painted = True
+
+        if is_painted:
+            painted_nail_count += 1
+
+    return painted_nail_count == len(predictions)
+
 def measure_smoothness(image, pred):
     """Measure health based on texture and color analysis."""
     x1 = int(pred['x'] - pred['width'] / 2)
@@ -42,29 +103,71 @@ def measure_smoothness(image, pred):
     if cropped.size == 0:
         return 99999  # Large penalty for empty crop
 
-    # Convert to grayscale for texture analysis
     gray = cv2.cvtColor(cropped, cv2.COLOR_BGR2GRAY)
 
-    # Texture analysis: Laplacian variance (higher variance indicates roughness)
+    # Texture analysis: Laplacian variance (higher variance => more "roughness")
     laplacian_var = cv2.Laplacian(gray, cv2.CV_64F).var()
 
     # Color analysis: Check for discoloration using HSV
     hsv_cropped = cv2.cvtColor(cropped, cv2.COLOR_BGR2HSV)
     h_std, s_std, v_std = np.std(hsv_cropped, axis=(0, 1))
 
-    # Combine metrics: Higher Laplacian variance and color deviations indicate poor health
-    texture_score = max(0, 100 - laplacian_var)  # Normalize to a 0-100 scale
+    texture_score = max(0, 100 - laplacian_var)  
     color_score = max(0, 100 - (h_std + s_std + v_std) / 3)
 
-    # Combine texture and color scores
     health_score = (texture_score + color_score) / 2
-    return max(0, min(100, health_score))  # Ensure score is between 0 and 100
+    return max(0, min(100, health_score))  # clamp to [0,100]
+
+def measure_health(image, pred):
+    """Measure nail health based on texture (dents) and yellow/green color detection, handling shininess."""
+    x1 = int(pred['x'] - pred['width'] / 2)
+    y1 = int(pred['y'] - pred['height'] / 2)
+    x2 = int(pred['x'] + pred['width'] / 2)
+    y2 = int(pred['y'] + pred['height'] / 2)
+
+    cropped = image[y1:y2, x1:x2]
+    if cropped.size == 0:
+        return 0  # Invalid region, assign minimum health score
+
+    # Convert to grayscale for texture analysis
+    gray = cv2.cvtColor(cropped, cv2.COLOR_BGR2GRAY)
+
+    # Measure texture smoothness (dents/roughness)
+    laplacian_var = cv2.Laplacian(gray, cv2.CV_64F).var()
+
+    # Detect yellow or green tones in RGB
+    b_mean, g_mean, r_mean = cv2.mean(cropped)[:3]
+    is_yellow = r_mean > 150 and g_mean > 150 and b_mean < 100
+    is_green = g_mean > 150 and r_mean < 100 and b_mean < 100
+
+    # Detect shininess
+    shiny_pixels = np.sum(gray > 220)  # Count pixels with very high brightness
+    shiny_ratio = shiny_pixels / (cropped.shape[0] * cropped.shape[1])
+    is_shiny = shiny_ratio > 0.15  # Consider it shiny if >15% of the region is very bright
+
+    # Apply thresholds for health score
+    if is_shiny:
+        health_score = 4 if not (is_yellow or is_green) else 3
+    else:
+        if laplacian_var < 10 and not is_yellow and not is_green:
+            health_score = 5  # Very smooth and no yellow/green tones
+        elif laplacian_var < 20 and not is_yellow and not is_green:
+            health_score = 4  # Slight dents, no yellow/green tones
+        elif laplacian_var < 40 or is_yellow or is_green:
+            health_score = 3  # Noticeable imperfections or slight yellow/green tones
+        elif laplacian_var < 60 or is_yellow or is_green:
+            health_score = 2  # Rough nails or clear yellow/green tones
+        else:
+            health_score = 1  # Very rough or heavily yellow/green nails
+
+    return int(max(1, min(5, health_score)))  # Clamp to range [1, 5]
+
 
 
 def calculate_rating(pred, image):
     ratings = {}
 
-    # LENGTH: Improved aspect ratio evaluation
+    # LENGTH
     aspect_ratio = pred['height'] / pred['width'] if pred['width'] > 0 else 0
     if aspect_ratio > 2.5:
         length_score = 5
@@ -78,28 +181,18 @@ def calculate_rating(pred, image):
         length_score = 1
     ratings['length'] = length_score
 
-    # SHAPE: Combine crookedness and symmetry
+    # SHAPE (crookedness + symmetry)
     crookedness = measure_crookedness(pred['points'])
-    symmetry_score = measure_symmetry(pred['points'])  # New function for symmetry
-    shape_score = max(5 - int(crookedness / 3), symmetry_score)  # Combine scores
+    symmetry_score = measure_symmetry(pred['points'])
+    shape_score = max(5 - int(crookedness / 3), symmetry_score)
     ratings['shape'] = shape_score
 
-    # HEALTH (SMOOTHNESS): Refined thresholds
-    std_dev = measure_smoothness(image, pred)
-    if std_dev > 90:
-        health_score = 5  # Excellent health
-    elif std_dev > 75:
-        health_score = 4  # Good health
-    elif std_dev > 50:
-        health_score = 3  # Average health
-    elif std_dev > 25:
-        health_score = 2  # Poor health
-    else:
-        health_score = 1  # Very poor health
+    # HEALTH (SMOOTHNESS AND UNIFORMITY)
+    health_score = measure_health(image, pred)
     ratings['health'] = health_score
 
-
     return ratings
+
 
 
 def measure_symmetry(points):
@@ -108,18 +201,16 @@ def measure_symmetry(points):
     y_coords = np.array([p['y'] for p in points])
     center_x = np.mean(x_coords)
 
-    # Split into left and right halves
     left_half = np.array([p for p in points if p['x'] < center_x])
     right_half = np.array([p for p in points if p['x'] >= center_x])
 
     if len(left_half) == 0 or len(right_half) == 0:
         return 1  # Penalize missing halves
 
-    # Compare mean positions of halves
     left_y_mean = np.mean([p['y'] for p in left_half])
     right_y_mean = np.mean([p['y'] for p in right_half])
     left_diff = np.abs(left_y_mean - right_y_mean)
-    return max(1, 5 - int(left_diff / 2))  # Higher score for better symmetry
+    return max(1, 5 - int(left_diff / 2))
 
 
 def measure_color_uniformity(image, pred):
@@ -151,33 +242,33 @@ def measure_crookedness(points):
 
     distances = [math.hypot(x - centroid_x, y - centroid_y)
                  for x, y in zip(x_coords, y_coords)]
-
     std_dev = np.std(distances)
     return std_dev
-
-
 
 def annotate_image_with_ratings(image, predictions):
     for pred in predictions:
         ratings = calculate_rating(pred, image)
 
         # Format detailed metrics for overlay
-        rating_text = (f"Length: {ratings['length']}, "
-                       f"Shape: {ratings['shape']}, "
-                       f"Health: {ratings['health']}")
+        rating_text = [f"Length: {ratings['length']} ",
+                       f"Shape: {ratings['shape']} ",
+                       f"Health: {ratings['health']}"]
 
         x = int(pred['x'] - pred['width'] / 2)
         y = int(pred['y'] - pred['height'] / 2)
-
-        cv2.putText(image,
-                    rating_text,
-                    (x, y - 10),
-                    cv2.FONT_HERSHEY_SIMPLEX,
-                    0.8,
-                    (0, 255, 255),
-                    2,
-                    cv2.LINE_AA)
-
+        line_height = 30
+        # Render each line
+        for i, line in enumerate(rating_text):
+            cv2.putText(
+                image,
+                line,
+                (x, y + i * line_height),  # Adjust y-position for each line
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.9,
+                (214, 81, 188),
+                2,
+                cv2.LINE_AA
+            )
     return image
 
 
@@ -185,9 +276,27 @@ def process_image(image_path):
     try:
         # Perform inference
         result = CLIENT.infer(image_path, model_id="nails_segmentation-vhnmw-p6sip/3")
-        
+
         # Load the image
         image = cv2.imread(image_path)
+        if image is None:
+            print(f"Error: Could not open the image at '{image_path}'.")
+            return
+
+        # Check for painted nails
+        if detect_painted_nails(image, result['predictions']):
+            print("Painted nails detected!")
+            
+            # Attempt to load the "painted nails detected" image
+            painted_image = cv2.imread(painted_nails_image_path)
+            if painted_image is not None:
+                cv2.imshow("Painted Nails Detected", scale_image(painted_image))
+                cv2.waitKey(0)
+                cv2.destroyAllWindows()
+            else:
+                # If the file can't be read, avoid .shape error
+                print(f"Warning: Could not open '{painted_nails_image_path}'. Skipping that display.")
+            return
 
         # Annotate the image with ratings
         annotated_image = annotate_image_with_ratings(image, result['predictions'])
@@ -201,8 +310,8 @@ def process_image(image_path):
             json.dump(result, f, indent=4)
         print(f"Predictions saved to {predictions_file}")
 
-        # Display the image
-        cv2.imshow("Processed Image", scale_image(annotated_image, 800, 800))
+        # Display the annotated image
+        cv2.imshow("Processed Image", scale_image(annotated_image))
         cv2.waitKey(0)
         cv2.destroyAllWindows()
 
@@ -211,7 +320,6 @@ def process_image(image_path):
 
 def process_frame(frame):
     try:
-        # Save the current frame to a temporary file
         temp_image_path = "temp_frame.jpg"
         cv2.imwrite(temp_image_path, frame)
 
@@ -220,12 +328,12 @@ def process_frame(frame):
 
         # Annotate the frame with ratings
         annotated_frame = annotate_image_with_ratings(frame, result['predictions'])
-
         return annotated_frame
 
     except Exception as e:
         print("Error during inference:", e)
         return frame
+
 
 def start_webcam():
     cap = cv2.VideoCapture(0)
@@ -242,14 +350,24 @@ def start_webcam():
                 print("Error: Failed to capture frame.")
                 break
 
-            # Process the frame
-            processed_frame = process_frame(frame)
+            # Display the live webcam feed
+            cv2.imshow("Webcam Feed", frame)
 
-            # Display the frame
-            cv2.imshow("Webcam Feed with Detections", processed_frame)
+            # Check for user input
+            key = cv2.waitKey(1) & 0xFF
 
-            # Break loop on 'q' key press
-            if cv2.waitKey(1) & 0xFF == ord('q'):
+            if key == ord('s'):  # Take a snapshot and process it
+                print("Snapshot taken. Processing...")
+
+                # Save the current frame to a temporary file
+                temp_image_path = "snapshot.jpg"
+                cv2.imwrite(temp_image_path, frame)
+
+                # Process the snapshot
+                process_image(temp_image_path)
+
+            elif key == ord('q'):  # Exit the webcam feed
+                print("Exiting webcam...")
                 break
 
     finally:
@@ -257,6 +375,7 @@ def start_webcam():
         cap.release()
         cv2.destroyAllWindows()
 
+# Ensure the main function remains unchanged
 def main():
     def choose_photo():
         file_path = filedialog.askopenfilename(filetypes=[("Image files", ".jpg;.png;*.jpeg")])
