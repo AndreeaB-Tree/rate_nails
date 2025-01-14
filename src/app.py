@@ -339,26 +339,45 @@ def annotate_image_with_ratings(image, predictions):
         ratings = calculate_rating(pred, image)
 
         # Format detailed metrics for overlay
-        rating_text = [f"Length: {ratings['length']} ",
-                       f"Shape: {ratings['shape']} ",
-                       f"Health: {ratings['health']}"]
+        rating_text = [
+            f"Length: {ratings['length']}",
+            f"Shape: {ratings['shape']}",
+            f"Health: {ratings['health']}",
+        ]
 
         x = int(pred['x'] - pred['width'] / 2)
         y = int(pred['y'] - pred['height'] / 2)
         line_height = 30
-        # Render each line
+
+        # Draw a semi-transparent dark pink background for the text box
+        overlay = image.copy()
+        text_box_height = line_height * len(rating_text) + 10  # Add padding
+        text_box_width = 200  # Width of the text box
+        cv2.rectangle(
+            overlay,
+            (x, y),
+            (x + text_box_width, y + text_box_height),
+            (249, 201, 225),  # Light pink background
+            -1,  # Filled rectangle
+        )
+        alpha = 0.8  # Transparency factor (less transparent for better visibility)
+        cv2.addWeighted(overlay, alpha, image, 1 - alpha, 0, image)
+
+        # Render each line in dark pink
         for i, line in enumerate(rating_text):
             cv2.putText(
                 image,
                 line,
-                (x, y + i * line_height),  # Adjust y-position for each line
+                (x + 10, y + 20 + i * line_height),  # Adjust y-position for each line
                 cv2.FONT_HERSHEY_SIMPLEX,
-                0.9,
-                (214, 81, 188),
+                0.7,
+                (233, 55, 144),  # Dark pink color
                 2,
-                cv2.LINE_AA
+                cv2.LINE_AA,
             )
     return image
+
+
 
 
 def process_image(image_path):
@@ -464,7 +483,12 @@ def start_webcam():
         cap.release()
         cv2.destroyAllWindows()
 
-# Ensure the main function remains unchanged
+from tkinter import ttk
+from tkinter import filedialog
+from tkinter import Label, Tk
+from PIL import Image, ImageTk
+
+
 def main():
     def choose_photo():
         file_path = filedialog.askopenfilename(filetypes=[("Image files", ".jpg;.png;*.jpeg")])
@@ -474,14 +498,72 @@ def main():
     def use_webcam():
         start_webcam()
 
-    root = tk.Tk()
-    root.title("Nail Detection")
-    root.geometry("300x200")
-    tk.Label(root, text="Choose an input method:", font=("Arial", 16)).pack(pady=20)
-    tk.Button(root, text="Upload Photo", command=choose_photo).pack(pady=10)
-    tk.Button(root, text="Use Webcam", command=use_webcam).pack(pady=10)
+    def update_gif(frame_index=0):
+        try:
+            frame = gif_frames[frame_index]
+            gif_label.config(image=frame)
+            root.after(gif_delays[frame_index], update_gif, (frame_index + 1) % len(gif_frames))
+        except Exception as e:
+            print("Error updating GIF:", e)
 
+    root = Tk()
+    root.title("Nail Detection")
+    root.geometry("400x400")  # Adjusted to fit the image and buttons
+    root.configure(bg="#FFC0CB")  # Light pink background
+
+    # Custom fonts
+    title_font = ("Comic Sans MS", 18, "bold")
+    button_font = ("Comic Sans MS", 12)
+
+    # Add a cute title with dark pink text
+    Label(root, text="💅 Nail Detection 💅", font=title_font, bg="#FFC0CB", fg="#C71585").pack(pady=10)
+
+    # Style buttons with dark pink text and a pinkish background
+    style = ttk.Style()
+    style.configure(
+        "TButton",
+        font=button_font,
+        foreground="#C71585",  # Dark pink text
+        background="#FF69B4",  # Light pink button background
+        borderwidth=1,
+    )
+    style.map(
+        "TButton",
+        background=[("active", "#FF1493")],  # Hot pink when hovered
+        foreground=[("active", "#C71585")],  # Dark pink text remains
+    )
+
+    ttk.Button(root, text="Upload Photo", command=choose_photo).pack(pady=10)
+    ttk.Button(root, text="Use Webcam", command=use_webcam).pack(pady=10)
+
+    # Load and display the animated GIF
+    try:
+        gif_path = "src\\hotbratz.gif"  # Replace with your GIF path
+        gif_image = Image.open(gif_path)
+
+        # Extract frames and delays
+        gif_frames = []
+        gif_delays = []
+
+        while True:
+            frame = ImageTk.PhotoImage(gif_image.copy())
+            gif_frames.append(frame)
+            gif_delays.append(gif_image.info.get("duration", 100))  # Default delay of 100ms if not specified
+            gif_image.seek(gif_image.tell() + 1)
+    except EOFError:
+        pass  # End of GIF frames
+    except Exception as e:
+        print("Error loading GIF:", e)
+
+    # Create a label for the GIF and start animation
+    gif_label = Label(root, bg="#FFC0CB")
+    gif_label.pack(pady=10)
+    if gif_frames:
+        update_gif()
+
+    # Run the main event loop
     root.mainloop()
+
 
 if __name__ == "__main__":
     main()
