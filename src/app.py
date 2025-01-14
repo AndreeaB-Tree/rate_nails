@@ -1,45 +1,38 @@
-from inference_sdk import InferenceHTTPClient
-import cv2
 import json
-import tkinter as tk
-from tkinter import filedialog
-
 import math
-import numpy as np
+import tkinter as tk
+from tkinter import Label, Tk, filedialog, ttk
 
-# Initialize the client
+import cv2
+import numpy as np
+from PIL import Image, ImageTk
+from inference_sdk import InferenceHTTPClient
+
 CLIENT = InferenceHTTPClient(
     api_url="https://outline.roboflow.com",
     api_key="rgJkZrGlxEhM7WTHPc6H"
 )
 
-# Output paths
 output_image_path = "output_image.jpg"
 predictions_file = "predictions.json"
 painted_nails_image_path = "src\\bratzslay.jpg"
 
 def scale_image(image, max_width = 800, max_height = 800):
-    """Scale image to fit within the specified dimensions while maintaining aspect ratio."""
+    """Scales image to fit within the specified dimensions."""
     height, width = image.shape[:2]
-
-    # Calculate scaling factor
     scale_width = max_width / width
     scale_height = max_height / height
     scale = min(scale_width, scale_height)
 
-    # Calculate new dimensions
     new_width = int(width * scale)
     new_height = int(height * scale)
 
-    # Resize the image
     scaled_image = cv2.resize(image, (new_width, new_height), interpolation=cv2.INTER_AREA)
     return scaled_image
 
 
 def detect_painted_nails(image, predictions):
-    """
-    Detect painted nails, including white-painted nails, while ignoring natural-colored nails.
-    """
+    """Detects painted nails, while ignoring natural-colored nails."""
     painted_nail_count = 0
 
     for pred in predictions:
@@ -48,7 +41,6 @@ def detect_painted_nails(image, predictions):
         x2 = int(round(pred['x'] + pred['width'] / 2))
         y2 = int(round(pred['y'] + pred['height'] / 2))
 
-        # Ensure indices are within bounds
         x1 = max(0, x1)
         y1 = max(0, y1)
         x2 = min(image.shape[1], x2)
@@ -58,89 +50,56 @@ def detect_painted_nails(image, predictions):
         if cropped.size == 0:
             continue
 
-        # Calculate RGB channel means and brightness
+        # Calculate RGB averages and brightness
         b_mean, g_mean, r_mean = cv2.mean(cropped)[:3]
         gray_cropped = cv2.cvtColor(cropped, cv2.COLOR_BGR2GRAY)
         mean_brightness = cv2.mean(gray_cropped)[0]
 
-        # Detect painted nails
         is_painted = False
 
-        # Check for white or near-white color (r \u2248 g \u2248 b) with high brightness
+        # Check for white color
         if abs(r_mean - g_mean) < 15 and abs(g_mean - b_mean) < 15 and r_mean >= 170:
             is_painted = True  # White or near-white nails
-
-        # Additional check for high brightness to confirm white-painted nails
         if mean_brightness >= 170:
             is_painted = True
 
-        # Define RGB ranges for natural nails (skin tones)
-        natural_min = (180, 150, 120)  # Lower bounds for natural colors (R, G, B)
-        natural_max = (255, 210, 180)  # Upper bounds for natural colors (R, G, B)
-
-        # Check if nail color is not within the natural nail color range
+        # RGB ranges for natural nails 
+        natural_min = (180, 150, 120)
+        natural_max = (255, 210, 180)
         if not (natural_min[0] <= r_mean <= natural_max[0] and
                 natural_min[1] <= g_mean <= natural_max[1] and
                 natural_min[2] <= b_mean <= natural_max[2]):
-            # Detect painted nails in bright or pastel colors if not already classified as white
-            if not is_painted:  # Check for bright/pastel colors if not already classified as white
-                if r_mean > 150 or g_mean > 150 or b_mean > 150:  # Bright colors
+            if not is_painted:
+                if r_mean > 150 or g_mean > 150 or b_mean > 150:
                     is_painted = True
                 elif (r_mean > 100 and g_mean > 100 and b_mean > 100) and \
-                     (max(r_mean, g_mean, b_mean) - min(r_mean, g_mean, b_mean) < 50):  # Pastels
+                     (max(r_mean, g_mean, b_mean) - min(r_mean, g_mean, b_mean) < 50):
                     is_painted = True
 
         if is_painted:
             painted_nail_count += 1
-
+            
     return painted_nail_count == len(predictions)
 
-def measure_smoothness(image, pred):
-    """Measure health based on texture and color analysis."""
-    x1 = int(pred['x'] - pred['width'] / 2)
-    y1 = int(pred['y'] - pred['height'] / 2)
-    x2 = int(pred['x'] + pred['width'] / 2)
-    y2 = int(pred['y'] + pred['height'] / 2)
-
-    cropped = image[y1:y2, x1:x2]
-    if cropped.size == 0:
-        return 99999  # Large penalty for empty crop
-
-    gray = cv2.cvtColor(cropped, cv2.COLOR_BGR2GRAY)
-
-    # Texture analysis: Laplacian variance (higher variance => more "roughness")
-    laplacian_var = cv2.Laplacian(gray, cv2.CV_64F).var()
-
-    # Color analysis: Check for discoloration using HSV
-    hsv_cropped = cv2.cvtColor(cropped, cv2.COLOR_BGR2HSV)
-    h_std, s_std, v_std = np.std(hsv_cropped, axis=(0, 1))
-
-    texture_score = max(0, 100 - laplacian_var)  
-    color_score = max(0, 100 - (h_std + s_std + v_std) / 3)
-
-    health_score = (texture_score + color_score) / 2
-    return max(0, min(100, health_score))  # clamp to [0,100]
 
 def preprocess_image(image):
-    """Normalize lighting using CLAHE."""
+    """Normalizes lighting using CLAHE."""
     lab = cv2.cvtColor(image, cv2.COLOR_BGR2LAB)
     l, a, b = cv2.split(lab)
     
     # Apply CLAHE to the L channel
     clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
     l_clahe = clahe.apply(l)
-    
-    # Merge the channels back
     lab_clahe = cv2.merge((l_clahe, a, b))
     normalized_image = cv2.cvtColor(lab_clahe, cv2.COLOR_LAB2BGR)
     return normalized_image
 
 def apply_gaussian_blur(image):
-    """Apply Gaussian blur to reduce noise."""
+    """Applies Gaussian blur."""
     return cv2.GaussianBlur(image, (5, 5), 0)
 
 def detect_cracks_and_splits(image, pred):
-    """Detect cracks and splits on the nail surface."""
+    """Detects cracks and splits on the nail."""
     x1 = int(pred['x'] - pred['width'] / 2)
     y1 = int(pred['y'] - pred['height'] / 2)
     x2 = int(pred['x'] + pred['width'] / 2)
@@ -148,29 +107,21 @@ def detect_cracks_and_splits(image, pred):
 
     cropped = image[y1:y2, x1:x2]
     if cropped.size == 0:
-        return 0  # No cracks detected
-
-    # Convert to grayscale and apply edge detection
+        return 0
     gray = cv2.cvtColor(cropped, cv2.COLOR_BGR2GRAY)
     edges = cv2.Canny(gray, 50, 150)
 
-    # Exclude very bright regions (reflections)
+    # Exclude very bright regions
     _, bright_mask = cv2.threshold(gray, 200, 255, cv2.THRESH_BINARY)
     edges = cv2.bitwise_and(edges, cv2.bitwise_not(bright_mask))
-
-    # Find contours of the edges
     contours, _ = cv2.findContours(edges, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-
-    # Filter contours by shape (e.g., length-to-width ratio)
     crack_like_contours = [
         c for c in contours if cv2.arcLength(c, True) / (cv2.contourArea(c) + 1) > 2.5
     ]
-
-    # Count crack-like contours
     crack_count = len(crack_like_contours)
 
-    # Return a crack score based on detected cracks
-    return int(min(100, crack_count * 10))  # Scale score to [0, 100]
+    # Return a score based on detected cracks
+    return int(min(100, crack_count * 10))  # Scale -> [0, 100]
 
 
 def detect_ridges(image, pred):
@@ -181,27 +132,21 @@ def detect_ridges(image, pred):
 
     cropped = image[y1:y2, x1:x2]
     if cropped.size == 0:
-        return 0  # No ridges detected
-
-    # Convert to grayscale and enhance contrast
+        return 0
     gray = cv2.cvtColor(cropped, cv2.COLOR_BGR2GRAY)
     enhanced = cv2.equalizeHist(gray)
 
-    # Apply Laplacian for ridge detection
     laplacian = cv2.Laplacian(enhanced, cv2.CV_64F)
     ridge_score = np.std(laplacian)  # Higher variance indicates more pronounced ridges
 
-    # Normalize and return score
-    return int(min(100, ridge_score * 10))
+    return int(min(100, ridge_score * 10))  # Scale -> [0, 100]
 
 
 def measure_health(image, pred):
-    """Measure nail health with lighting normalization and enhanced analysis."""
-    # Preprocess the image for better analysis
+    """Measures nail health."""
     preprocessed_image = preprocess_image(image)
     blurred_image = apply_gaussian_blur(preprocessed_image)
 
-    # Proceed with existing LAB color analysis and Laplacian calculations
     x1 = int(pred['x'] - pred['width'] / 2)
     y1 = int(pred['y'] - pred['height'] / 2)
     x2 = int(pred['x'] + pred['width'] / 2)
@@ -209,7 +154,7 @@ def measure_health(image, pred):
 
     cropped = blurred_image[y1:y2, x1:x2]
     if cropped.size == 0:
-        return 1  # Assign minimum health score for invalid regions
+        return 1
 
     # LAB color analysis
     lab_cropped = cv2.cvtColor(cropped, cv2.COLOR_BGR2LAB)
@@ -222,43 +167,28 @@ def measure_health(image, pred):
     laplacian = cv2.Laplacian(gray, cv2.CV_64F)
     laplacian_var = laplacian.var()
 
-    # Detect cracks and splits
     crack_score = detect_cracks_and_splits(blurred_image, pred)
-
-    # Detect ridges
     ridge_score = detect_ridges(blurred_image, pred)
-
-    # Combine metrics for health score
-    health_score = 5  # Start with a perfect health score
-
-    # Penalize for discoloration
+    health_score = 5
     if is_yellow or is_green:
-        health_score -= 1
+        health_score == 1
 
-    # Penalize for texture roughness
     if laplacian_var < 10:
         health_score -= 2
     elif laplacian_var < 20:
         health_score -= 1
 
-    # Penalize for cracks and ridges
-    if crack_score > 20:  # Adjust threshold as needed
+    if crack_score > 20:
         health_score -= 1
-    if ridge_score > 20:  # Adjust threshold as needed
+    if ridge_score > 20:
         health_score -= 1
 
-    # Clamp the health score to a range [1, 5]
     return int(max(1, min(5, health_score)))
-
-
-
-
 
 
 def calculate_rating(pred, image):
     ratings = {}
 
-    # LENGTH
     aspect_ratio = pred['height'] / pred['width'] if pred['width'] > 0 else 0
     if aspect_ratio > 2.5:
         length_score = 5
@@ -272,54 +202,35 @@ def calculate_rating(pred, image):
         length_score = 1
     ratings['length'] = length_score
 
-    # SHAPE (crookedness + symmetry)
+    # shape = crookedness + symmetry
     crookedness = measure_crookedness(pred['points'])
     symmetry_score = measure_symmetry(pred['points'])
     shape_score = max(5 - int(crookedness / 3), symmetry_score)
     ratings['shape'] = shape_score
 
-    # HEALTH (SMOOTHNESS AND UNIFORMITY)
+    # health  = smoothness + uniformity
     health_score = measure_health(image, pred)
     ratings['health'] = health_score
 
     return ratings
 
 
-
 def measure_symmetry(points):
-    """Evaluate symmetry by comparing left and right halves of the nail."""
+    """Evaluates symmetry by comparing left and right halves of the nail."""
     x_coords = np.array([p['x'] for p in points])
-    y_coords = np.array([p['y'] for p in points])
+    # y_coords = np.array([p['y'] for p in points])
     center_x = np.mean(x_coords)
 
     left_half = np.array([p for p in points if p['x'] < center_x])
     right_half = np.array([p for p in points if p['x'] >= center_x])
 
     if len(left_half) == 0 or len(right_half) == 0:
-        return 1  # Penalize missing halves
+        return 1 
 
     left_y_mean = np.mean([p['y'] for p in left_half])
     right_y_mean = np.mean([p['y'] for p in right_half])
     left_diff = np.abs(left_y_mean - right_y_mean)
     return max(1, 5 - int(left_diff / 2))
-
-
-def measure_color_uniformity(image, pred):
-    """Measure color uniformity in the nail area."""
-    x1 = int(pred['x'] - pred['width'] / 2)
-    y1 = int(pred['y'] - pred['height'] / 2)
-    x2 = int(pred['x'] + pred['width'] / 2)
-    y2 = int(pred['y'] + pred['height'] / 2)
-
-    cropped = image[y1:y2, x1:x2]
-    if cropped.size == 0:
-        return 0
-
-    # Convert to HSV for better color analysis
-    hsv_cropped = cv2.cvtColor(cropped, cv2.COLOR_BGR2HSV)
-    h_std, s_std, v_std = np.std(hsv_cropped, axis=(0, 1))
-    uniformity_score = 100 - (h_std + s_std + v_std) / 3
-    return max(0, min(100, uniformity_score))
 
 
 def measure_crookedness(points):
@@ -338,7 +249,6 @@ def annotate_image_with_ratings(image, predictions):
     for pred in predictions:
         ratings = calculate_rating(pred, image)
 
-        # Format detailed metrics for overlay
         rating_text = [
             f"Length: {ratings['length']}",
             f"Shape: {ratings['shape']}",
@@ -348,44 +258,38 @@ def annotate_image_with_ratings(image, predictions):
         x = int(pred['x'] - pred['width'] / 2)
         y = int(pred['y'] - pred['height'] / 2)
         line_height = 30
-
-        # Draw a semi-transparent dark pink background for the text box
         overlay = image.copy()
-        text_box_height = line_height * len(rating_text) + 10  # Add padding
-        text_box_width = 200  # Width of the text box
+        text_box_height = line_height * len(rating_text) + 10
+        text_box_width = 200
+
         cv2.rectangle(
             overlay,
             (x, y),
             (x + text_box_width, y + text_box_height),
-            (249, 201, 225),  # Light pink background
-            -1,  # Filled rectangle
+            (249, 201, 225),
+            -1,
         )
-        alpha = 0.8  # Transparency factor (less transparent for better visibility)
+        alpha = 0.8
         cv2.addWeighted(overlay, alpha, image, 1 - alpha, 0, image)
 
-        # Render each line in dark pink
         for i, line in enumerate(rating_text):
             cv2.putText(
                 image,
                 line,
-                (x + 10, y + 20 + i * line_height),  # Adjust y-position for each line
+                (x + 10, y + 20 + i * line_height),
                 cv2.FONT_HERSHEY_SIMPLEX,
                 0.7,
-                (233, 55, 144),  # Dark pink color
+                (233, 55, 144),
                 2,
                 cv2.LINE_AA,
             )
     return image
 
 
-
-
 def process_image(image_path):
     try:
         # Perform inference
         result = CLIENT.infer(image_path, model_id="nails_segmentation-vhnmw-p6sip/3")
-
-        # Load the image
         image = cv2.imread(image_path)
         if image is None:
             print(f"Error: Could not open the image at '{image_path}'.")
@@ -394,31 +298,22 @@ def process_image(image_path):
         # Check for painted nails
         if detect_painted_nails(image, result['predictions']):
             print("Painted nails detected!")
-            
-            # Attempt to load the "painted nails detected" image
             painted_image = cv2.imread(painted_nails_image_path)
             if painted_image is not None:
                 cv2.imshow("Painted Nails Detected", scale_image(painted_image))
                 cv2.waitKey(0)
                 cv2.destroyAllWindows()
             else:
-                # If the file can't be read, avoid .shape error
                 print(f"Warning: Could not open '{painted_nails_image_path}'. Skipping that display.")
             return
 
-        # Annotate the image with ratings
         annotated_image = annotate_image_with_ratings(image, result['predictions'])
-
-        # Save and display the processed image
         cv2.imwrite(output_image_path, annotated_image)
         print(f"Output image saved to {output_image_path}")
-
-        # Save predictions to a JSON file
         with open(predictions_file, "w") as f:
             json.dump(result, f, indent=4)
         print(f"Predictions saved to {predictions_file}")
 
-        # Display the annotated image
         cv2.imshow("Processed Image", scale_image(annotated_image))
         cv2.waitKey(0)
         cv2.destroyAllWindows()
@@ -426,21 +321,19 @@ def process_image(image_path):
     except Exception as e:
         print("Error during inference:", e)
 
-def process_frame(frame):
-    try:
-        temp_image_path = "temp_frame.jpg"
-        cv2.imwrite(temp_image_path, frame)
+# FOR LIVE RATINGS
+# def process_frame(frame):
+#     try:
+#         temp_image_path = "temp_frame.jpg"
+#         cv2.imwrite(temp_image_path, frame)
+#         result = CLIENT.infer(temp_image_path, model_id="nails_segmentation-vhnmw-p6sip/3")
 
-        # Perform inference
-        result = CLIENT.infer(temp_image_path, model_id="nails_segmentation-vhnmw-p6sip/3")
+#         annotated_frame = annotate_image_with_ratings(frame, result['predictions'])
+#         return annotated_frame
 
-        # Annotate the frame with ratings
-        annotated_frame = annotate_image_with_ratings(frame, result['predictions'])
-        return annotated_frame
-
-    except Exception as e:
-        print("Error during inference:", e)
-        return frame
+#     except Exception as e:
+#         print("Error during inference:", e)
+#         return frame
 
 
 def start_webcam():
@@ -457,36 +350,22 @@ def start_webcam():
             if not ret:
                 print("Error: Failed to capture frame.")
                 break
-
-            # Display the live webcam feed
             cv2.imshow("Webcam Feed", frame)
-
-            # Check for user input
             key = cv2.waitKey(1) & 0xFF
 
-            if key == ord('s'):  # Take a snapshot and process it
+            if key == ord('s'):
                 print("Snapshot taken. Processing...")
-
-                # Save the current frame to a temporary file
                 temp_image_path = "snapshot.jpg"
                 cv2.imwrite(temp_image_path, frame)
-
-                # Process the snapshot
                 process_image(temp_image_path)
 
-            elif key == ord('q'):  # Exit the webcam feed
+            elif key == ord('q'):
                 print("Exiting webcam...")
                 break
 
     finally:
-        # Release the webcam and close windows
         cap.release()
         cv2.destroyAllWindows()
-
-from tkinter import ttk
-from tkinter import filedialog
-from tkinter import Label, Tk
-from PIL import Image, ImageTk
 
 
 def main():
@@ -508,60 +387,50 @@ def main():
 
     root = Tk()
     root.title("Nail Detection")
-    root.geometry("400x400")  # Adjusted to fit the image and buttons
-    root.configure(bg="#FFC0CB")  # Light pink background
-
-    # Custom fonts
+    root.geometry("400x400")
+    root.configure(bg="#FFC0CB")
     title_font = ("Comic Sans MS", 18, "bold")
     button_font = ("Comic Sans MS", 12)
+    Label(root, text="✨💅 Nail Detection 💅✨", font=title_font, bg="#FFC0CB", fg="#C71585").pack(pady=10)
 
-    # Add a cute title with dark pink text
-    Label(root, text="💅 Nail Detection 💅", font=title_font, bg="#FFC0CB", fg="#C71585").pack(pady=10)
-
-    # Style buttons with dark pink text and a pinkish background
     style = ttk.Style()
     style.configure(
         "TButton",
         font=button_font,
-        foreground="#C71585",  # Dark pink text
-        background="#FF69B4",  # Light pink button background
+        foreground="#C71585",
+        background="#FF69B4",
         borderwidth=1,
     )
     style.map(
         "TButton",
-        background=[("active", "#FF1493")],  # Hot pink when hovered
-        foreground=[("active", "#C71585")],  # Dark pink text remains
+        background=[("active", "#FF1493")],
+        foreground=[("active", "#C71585")],
     )
 
     ttk.Button(root, text="Upload Photo", command=choose_photo).pack(pady=10)
     ttk.Button(root, text="Use Webcam", command=use_webcam).pack(pady=10)
 
-    # Load and display the animated GIF
     try:
-        gif_path = "src\\hotbratz.gif"  # Replace with your GIF path
+        gif_path = "src\\hotbratz.gif"
         gif_image = Image.open(gif_path)
-
-        # Extract frames and delays
         gif_frames = []
         gif_delays = []
 
         while True:
             frame = ImageTk.PhotoImage(gif_image.copy())
             gif_frames.append(frame)
-            gif_delays.append(gif_image.info.get("duration", 100))  # Default delay of 100ms if not specified
+            gif_delays.append(gif_image.info.get("duration", 100))
             gif_image.seek(gif_image.tell() + 1)
     except EOFError:
-        pass  # End of GIF frames
+        pass
     except Exception as e:
         print("Error loading GIF:", e)
 
-    # Create a label for the GIF and start animation
     gif_label = Label(root, bg="#FFC0CB")
     gif_label.pack(pady=10)
     if gif_frames:
         update_gif()
 
-    # Run the main event loop
     root.mainloop()
 
 
