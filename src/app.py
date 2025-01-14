@@ -4,6 +4,9 @@ import json
 import tkinter as tk
 from tkinter import filedialog
 
+import math
+import numpy as np
+
 # Initialize the client
 CLIENT = InferenceHTTPClient(
     api_url="https://outline.roboflow.com",
@@ -118,8 +121,26 @@ def measure_smoothness(image, pred):
     health_score = (texture_score + color_score) / 2
     return max(0, min(100, health_score))  # clamp to [0,100]
 
-def measure_health(image, pred):
-    """Measure nail health based on texture (dents) and yellow/green color detection, handling shininess."""
+def preprocess_image(image):
+    """Normalize lighting using CLAHE."""
+    lab = cv2.cvtColor(image, cv2.COLOR_BGR2LAB)
+    l, a, b = cv2.split(lab)
+    
+    # Apply CLAHE to the L channel
+    clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+    l_clahe = clahe.apply(l)
+    
+    # Merge the channels back
+    lab_clahe = cv2.merge((l_clahe, a, b))
+    normalized_image = cv2.cvtColor(lab_clahe, cv2.COLOR_LAB2BGR)
+    return normalized_image
+
+def apply_gaussian_blur(image):
+    """Apply Gaussian blur to reduce noise."""
+    return cv2.GaussianBlur(image, (5, 5), 0)
+
+def detect_cracks_and_splits(image, pred):
+    """Detect cracks and splits on the nail surface."""
     x1 = int(pred['x'] - pred['width'] / 2)
     y1 = int(pred['y'] - pred['height'] / 2)
     x2 = int(pred['x'] + pred['width'] / 2)
@@ -127,40 +148,110 @@ def measure_health(image, pred):
 
     cropped = image[y1:y2, x1:x2]
     if cropped.size == 0:
-        return 0  # Invalid region, assign minimum health score
+        return 0  # No cracks detected
 
-    # Convert to grayscale for texture analysis
+    # Convert to grayscale and apply edge detection
     gray = cv2.cvtColor(cropped, cv2.COLOR_BGR2GRAY)
+    edges = cv2.Canny(gray, 50, 150)
 
-    # Measure texture smoothness (dents/roughness)
-    laplacian_var = cv2.Laplacian(gray, cv2.CV_64F).var()
+    # Exclude very bright regions (reflections)
+    _, bright_mask = cv2.threshold(gray, 200, 255, cv2.THRESH_BINARY)
+    edges = cv2.bitwise_and(edges, cv2.bitwise_not(bright_mask))
 
-    # Detect yellow or green tones in RGB
-    b_mean, g_mean, r_mean = cv2.mean(cropped)[:3]
-    is_yellow = r_mean > 150 and g_mean > 150 and b_mean < 100
-    is_green = g_mean > 150 and r_mean < 100 and b_mean < 100
+    # Find contours of the edges
+    contours, _ = cv2.findContours(edges, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
 
-    # Detect shininess
-    shiny_pixels = np.sum(gray > 220)  # Count pixels with very high brightness
-    shiny_ratio = shiny_pixels / (cropped.shape[0] * cropped.shape[1])
-    is_shiny = shiny_ratio > 0.15  # Consider it shiny if >15% of the region is very bright
+    # Filter contours by shape (e.g., length-to-width ratio)
+    crack_like_contours = [
+        c for c in contours if cv2.arcLength(c, True) / (cv2.contourArea(c) + 1) > 2.5
+    ]
 
-    # Apply thresholds for health score
-    if is_shiny:
-        health_score = 4 if not (is_yellow or is_green) else 3
-    else:
-        if laplacian_var < 10 and not is_yellow and not is_green:
-            health_score = 5  # Very smooth and no yellow/green tones
-        elif laplacian_var < 20 and not is_yellow and not is_green:
-            health_score = 4  # Slight dents, no yellow/green tones
-        elif laplacian_var < 40 or is_yellow or is_green:
-            health_score = 3  # Noticeable imperfections or slight yellow/green tones
-        elif laplacian_var < 60 or is_yellow or is_green:
-            health_score = 2  # Rough nails or clear yellow/green tones
-        else:
-            health_score = 1  # Very rough or heavily yellow/green nails
+    # Count crack-like contours
+    crack_count = len(crack_like_contours)
 
-    return int(max(1, min(5, health_score)))  # Clamp to range [1, 5]
+    # Return a crack score based on detected cracks
+    return int(min(100, crack_count * 10))  # Scale score to [0, 100]
+
+
+def detect_ridges(image, pred):
+    x1 = int(pred['x'] - pred['width'] / 2)
+    y1 = int(pred['y'] - pred['height'] / 2)
+    x2 = int(pred['x'] + pred['width'] / 2)
+    y2 = int(pred['y'] + pred['height'] / 2)
+
+    cropped = image[y1:y2, x1:x2]
+    if cropped.size == 0:
+        return 0  # No ridges detected
+
+    # Convert to grayscale and enhance contrast
+    gray = cv2.cvtColor(cropped, cv2.COLOR_BGR2GRAY)
+    enhanced = cv2.equalizeHist(gray)
+
+    # Apply Laplacian for ridge detection
+    laplacian = cv2.Laplacian(enhanced, cv2.CV_64F)
+    ridge_score = np.std(laplacian)  # Higher variance indicates more pronounced ridges
+
+    # Normalize and return score
+    return int(min(100, ridge_score * 10))
+
+
+def measure_health(image, pred):
+    """Measure nail health with lighting normalization and enhanced analysis."""
+    # Preprocess the image for better analysis
+    preprocessed_image = preprocess_image(image)
+    blurred_image = apply_gaussian_blur(preprocessed_image)
+
+    # Proceed with existing LAB color analysis and Laplacian calculations
+    x1 = int(pred['x'] - pred['width'] / 2)
+    y1 = int(pred['y'] - pred['height'] / 2)
+    x2 = int(pred['x'] + pred['width'] / 2)
+    y2 = int(pred['y'] + pred['height'] / 2)
+
+    cropped = blurred_image[y1:y2, x1:x2]
+    if cropped.size == 0:
+        return 1  # Assign minimum health score for invalid regions
+
+    # LAB color analysis
+    lab_cropped = cv2.cvtColor(cropped, cv2.COLOR_BGR2LAB)
+    l_mean, a_mean, b_mean = cv2.mean(lab_cropped)[:3]
+    is_yellow = b_mean > 150 and a_mean < 130
+    is_green = a_mean < 110 and b_mean > 120
+
+    # Laplacian for texture analysis
+    gray = cv2.cvtColor(cropped, cv2.COLOR_BGR2GRAY)
+    laplacian = cv2.Laplacian(gray, cv2.CV_64F)
+    laplacian_var = laplacian.var()
+
+    # Detect cracks and splits
+    crack_score = detect_cracks_and_splits(blurred_image, pred)
+
+    # Detect ridges
+    ridge_score = detect_ridges(blurred_image, pred)
+
+    # Combine metrics for health score
+    health_score = 5  # Start with a perfect health score
+
+    # Penalize for discoloration
+    if is_yellow or is_green:
+        health_score -= 1
+
+    # Penalize for texture roughness
+    if laplacian_var < 10:
+        health_score -= 2
+    elif laplacian_var < 20:
+        health_score -= 1
+
+    # Penalize for cracks and ridges
+    if crack_score > 20:  # Adjust threshold as needed
+        health_score -= 1
+    if ridge_score > 20:  # Adjust threshold as needed
+        health_score -= 1
+
+    # Clamp the health score to a range [1, 5]
+    return int(max(1, min(5, health_score)))
+
+
+
 
 
 
@@ -230,8 +321,6 @@ def measure_color_uniformity(image, pred):
     uniformity_score = 100 - (h_std + s_std + v_std) / 3
     return max(0, min(100, uniformity_score))
 
-import math
-import numpy as np
 
 def measure_crookedness(points):
     """Measure how straight the nail is based on the points."""
