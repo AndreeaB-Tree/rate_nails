@@ -464,6 +464,14 @@ def process_image(image_path):
             display_no_nails_detected()
             return
 
+        ground_truth_path = "ground_truth.json"
+        with open(ground_truth_path, "r") as gt_file:
+            ground_truth = json.load(gt_file)
+
+        kpis = calculate_validation_metrics(result['predictions'], ground_truth)
+
+        save_validation_results_to_file(kpis)
+
         all_ratings = []
         for pred in result['predictions']:
             ratings = calculate_rating(pred, image)
@@ -485,6 +493,7 @@ def process_image(image_path):
 
     except Exception as e:
         print("Error during inference:", e)
+
 
 # FOR LIVE RATINGS
 # def process_frame(frame):
@@ -568,6 +577,100 @@ def start_webcam():
         cap.release()
         cv2.destroyAllWindows()
 
+
+def save_validation_results_to_file(kpis, file_path="validation_results.txt"):
+    """Saves validation KPIs to a file."""
+    kpi_text = (
+        f"True Positives (TP): {kpis['TP']}\n"
+        f"False Positives (FP): {kpis['FP']}\n"
+        f"False Negatives (FN): {kpis['FN']}\n"
+        f"True Negatives (TN): {kpis.get('TN', 0)}\n"
+        f"Precision: {kpis['Precision']:.2f}\n"
+        f"Recall: {kpis['Recall']:.2f}\n"
+    )
+    
+    try:
+        with open(file_path, "w") as file:
+            file.write("Validation Results:\n")
+            file.write(kpi_text)
+        print(f"Validation results saved to {file_path}")
+    except Exception as e:
+        print(f"Error saving validation results: {e}")
+
+def calculate_iou(ground_truth, prediction):
+    """
+    Calculate the Intersection over Union (IoU) of a ground truth box and a prediction box.
+    ground_truth: dict with keys 'x1', 'y1', 'x2', 'y2'.
+    prediction: dict with keys 'x', 'y', 'width', 'height'.
+    """
+    gt_x1 = ground_truth['x1']
+    gt_y1 = ground_truth['y1']
+    gt_x2 = ground_truth['x2']
+    gt_y2 = ground_truth['y2']
+
+    pred_x1 = int(prediction['x'] - prediction['width'] / 2)
+    pred_y1 = int(prediction['y'] - prediction['height'] / 2)
+    pred_x2 = int(prediction['x'] + prediction['width'] / 2)
+    pred_y2 = int(prediction['y'] + prediction['height'] / 2)
+
+    x_left = max(gt_x1, pred_x1)
+    y_top = max(gt_y1, pred_y1)
+    x_right = min(gt_x2, pred_x2)
+    y_bottom = min(gt_y2, pred_y2)
+
+    if x_right < x_left or y_bottom < y_top:
+        return 0.0
+
+    intersection_area = (x_right - x_left) * (y_bottom - y_top)
+    gt_area = (gt_x2 - gt_x1) * (gt_y2 - gt_y1)
+    pred_area = (pred_x2 - pred_x1) * (pred_y2 - pred_y1)
+
+    union_area = gt_area + pred_area - intersection_area
+    iou = intersection_area / union_area if union_area > 0 else 0.0
+    return iou
+
+
+def calculate_validation_metrics(predictions, ground_truth):
+    """
+    Calculates validation metrics (TP, FP, FN, Precision, Recall).
+    predictions: List of predicted boxes with 'x', 'y', 'width', 'height'.
+    ground_truth: List of ground truth boxes with 'x1', 'y1', 'x2', 'y2'.
+    """
+    tp = 0
+    fp = 0
+    fn = 0
+
+    matched_gt = set()
+
+    for pred in predictions:
+        matched = False
+        for i, gt in enumerate(ground_truth):
+            if i in matched_gt:
+                continue
+
+            iou = calculate_iou(gt, pred)
+            if iou > 0.5:
+                tp += 1
+                matched_gt.add(i)
+                matched = True
+                break
+
+        if not matched:
+            fp += 1
+
+    fn = len(ground_truth) - len(matched_gt)
+
+    precision = tp / (tp + fp) if (tp + fp) > 0 else 0
+    recall = tp / (tp + fn) if (tp + fn) > 0 else 0
+
+    return {
+        "TP": tp,
+        "FP": fp,
+        "FN": fn,
+        "TN": 0,
+        "Precision": precision,
+        "Recall": recall,
+    }
 
 def main():
     def choose_photo():
