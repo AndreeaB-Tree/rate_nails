@@ -477,6 +477,17 @@ def process_image(image_path):
             ratings = calculate_rating(pred, image)
             all_ratings.append({"prediction": pred, "ratings": ratings})
 
+        if detect_painted_nails(image, result['predictions']):
+            print("Painted nails detected!")
+            painted_image = cv2.imread(painted_nails_image_path)
+            if painted_image is not None:
+                cv2.imshow("Painted Nails Detected", scale_image(painted_image))
+                cv2.waitKey(0)
+                cv2.destroyAllWindows()
+            else:
+                print(f"Warning: Could not open '{painted_nails_image_path}'. Skipping that display.")
+            return
+
         annotated_image = image.copy()
         for item in all_ratings:
             pred = item["prediction"]
@@ -549,6 +560,17 @@ def start_webcam():
                     for pred in result['predictions']:
                         ratings = calculate_rating(pred, image)
                         all_ratings.append({"prediction": pred, "ratings": ratings})
+
+                    if detect_painted_nails(image, result['predictions']):
+                        print("Painted nails detected!")
+                        painted_image = cv2.imread(painted_nails_image_path)
+                        if painted_image is not None:
+                            cv2.imshow("Painted Nails Detected", scale_image(painted_image))
+                            cv2.waitKey(0)
+                            cv2.destroyAllWindows()
+                        else:
+                            print(f"Warning: Could not open '{painted_nails_image_path}'. Skipping that display.")
+                        return
 
                     annotated_image = image.copy()
                     for item in all_ratings:
